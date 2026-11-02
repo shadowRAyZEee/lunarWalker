@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Лунный walker — 3D Endless Runner</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Подключение Three.js через CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <!-- Контейнер 3D-сцены -->
+  <div id="canvas-container"></div>
+
+  <!-- Ненавязчивое предупреждение, если localStorage недоступен -->
+  <div id="storage-warning" class="hidden">
+    Локальное хранилище недоступно. Прогресс сохраняется только в памяти до закрытия вкладки.
+  </div>
+
+  <!-- HUD во время забега (без информации о кристаллах) -->
+  <div id="hud" class="hidden">
+    <div class="hud-group">
+      <div class="hud-pill">
+        <div class="hud-label">Счёт (дистанция)</div>
+        <div id="hud-score" class="hud-value cyan">0</div>
+      </div>
+      <div class="hud-pill">
+        <div class="hud-label">Рекорд</div>
+        <div id="hud-best" class="hud-value">0</div>
+      </div>
+      <div class="hud-pill">
+        <div class="hud-label">Монеты</div>
+        <div id="hud-tokens" class="hud-value gold">0</div>
+      </div>
+    </div>
+    <button id="btn-hud-pause" type="button" title="Пауза (Esc)">Пауза (Esc)</button>
+  </div>
+
+  <!-- Главное меню -->
+  <div id="screen-menu" class="overlay-screen">
+    <div class="panel">
+      <h1 class="game-title">Лунный walker</h1>
+      <p class="game-subtitle">Вы безымянный космонавт, сможете ли вы добежать до своей ракеты?</p>
+
+      <div class="btn-stack">
+        <button id="btn-menu-play" class="btn btn-primary" type="button">Играть</button>
+        <button id="btn-menu-shop" class="btn" type="button">Магазин и планеты</button>
+        <button id="btn-menu-leaderboard" class="btn" type="button">Таблица рекордов</button>
+      </div>
+
+      <div class="controls-box">
+        <div><strong>Управление и особенности:</strong></div>
+        <div class="controls-grid">
+          <div><strong>A / ◄</strong> — полоса влево</div>
+          <div><strong>D / ►</strong> — полоса вправо</div>
+          <div><strong>W / Пробел / ▲</strong> — прыжок</div>
+          <div><strong>S / ▼</strong> — снизиться в воздухе</div>
+          <div><strong>Esc</strong> — пауза забега</div>
+          <div><strong>M</strong> — звук вкл / выкл</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Экран паузы -->
+  <div id="screen-pause" class="overlay-screen hidden">
+    <div class="panel">
+      <h2 class="section-title">Пауза</h2>
+      <p class="game-subtitle">Забег приостановлен. Переведите дух, космонавт.</p>
+      <div class="btn-stack">
+        <button id="btn-pause-resume" class="btn btn-primary" type="button">Продолжить</button>
+        <button id="btn-pause-menu" class="btn" type="button">В меню</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Экран завершения забега -->
+  <div id="screen-gameover" class="overlay-screen hidden">
+    <div class="panel wide">
+      <h2 class="section-title">Забег завершён</h2>
+      <p class="game-subtitle">Столкновение с обломком астероида</p>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="label">Итоговый счёт</div>
+          <div id="go-score" class="val cyan">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Лучший рекорд</div>
+          <div id="go-best" class="val">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Собрано монет</div>
+          <div id="go-tokens" class="val gold">+0</div>
+        </div>
+      </div>
+
+      <div class="btn-stack">
+        <button id="btn-go-retry" class="btn btn-primary" type="button">Ещё раз</button>
+        <button id="btn-go-shop" class="btn" type="button">Магазин и планеты</button>
+        <button id="btn-go-menu" class="btn" type="button">В меню</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Экран магазина (Скафандры за монеты + Планеты за редкие кристаллы) -->
+  <div id="screen-shop" class="overlay-screen hidden">
+    <div class="panel extra-wide">
+      <h2 class="section-title">Космический арсенал</h2>
+      <p class="game-subtitle">Скафандры покупаются за монеты, а планеты на небосводе — за редкие кристаллы</p>
+
+      <div class="shop-balances-row">
+        <div class="shop-balance-box gold-border">
+          <span>Лунные монеты:</span>
+          <strong class="gold-text"><span id="shop-balance-tokens">0</span> шт.</strong>
+        </div>
+        <div class="shop-balance-box purple-border">
+          <span>Звёздные кристаллы:</span>
+          <strong class="purple-text"><span id="shop-balance-crystals">0</span> шт.</strong>
+        </div>
+      </div>
+
+      <!-- Вкладки магазина -->
+      <div class="shop-tabs">
+        <button id="tab-btn-suits" class="tab-btn active" type="button">Скафандры (6)</button>
+        <button id="tab-btn-planets" class="tab-btn" type="button">Планеты на фоне (5)</button>
+      </div>
+
+      <!-- Контейнер карточек скафандров -->
+      <div id="shop-suits-container" class="shop-grid"></div>
+
+      <!-- Контейнер карточек планет -->
+      <div id="shop-planets-container" class="shop-grid hidden"></div>
+
+      <div class="btn-row">
+        <button id="btn-shop-back" class="btn btn-primary" type="button">Назад</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Экран таблицы рекордов -->
+  <div id="screen-leaderboard" class="overlay-screen hidden">
+    <div class="panel wide">
+      <h2 class="section-title">Таблица рекордов</h2>
+      <p class="game-subtitle">Локальная таблица 10 лучших забегов на этом устройстве</p>
+
+      <div class="best-banner">
+        <span>Лучший результат за всё время:</span>
+        <span id="lb-alltime-best" class="gold-text" style="font-size: 1.25rem;">0</span>
+      </div>
+
+      <div class="table-wrap">
+        <table class="leaderboard-table">
+          <thead>
+            <tr>
+              <th>Место</th>
+              <th>Результат</th>
+              <th>Пройдено</th>
+              <th>Дата забега</th>
+            </tr>
+          </thead>
+          <tbody id="leaderboard-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="btn-row">
+        <button id="btn-lb-back" class="btn btn-primary" type="button">Назад</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Экран фатальной ошибки WebGL / Three.js -->
+  <div id="screen-fatal" class="overlay-screen hidden">
+    <div class="panel">
+      <h2 class="section-title" style="color: var(--accent-danger);">Ошибка инициализации 3D</h2>
+      <p id="fatal-message" class="game-subtitle" style="margin-top: 12px; color: var(--text-main);">
+        Не удалось загрузить библиотеку Three.js или инициализировать WebGL в вашем браузере.
+        Проверьте подключение к интернету для загрузки CDN или включите аппаратное ускорение графики.
+      </p>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
