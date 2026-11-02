@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Лунный забег — 3D Endless Runner</title>
+  <title>Лунный walker — 3D Endless Runner</title>
   <link rel="stylesheet" href="style.css" />
   <!-- Подключение Three.js через CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -17,7 +17,7 @@
     Локальное хранилище недоступно. Прогресс сохраняется только в памяти до закрытия вкладки.
   </div>
 
-  <!-- HUD во время забега -->
+  <!-- HUD во время забега (без информации о кристаллах) -->
   <div id="hud" class="hidden">
     <div class="hud-group">
       <div class="hud-pill">
@@ -29,22 +29,18 @@
         <div id="hud-best" class="hud-value">0</div>
       </div>
       <div class="hud-pill">
-        <div class="hud-label">Жетоны</div>
+        <div class="hud-label">Монеты</div>
         <div id="hud-tokens" class="hud-value gold">0</div>
-      </div>
-      <div class="hud-pill crystal-pill">
-        <div class="hud-label">Кристаллы (300 м)</div>
-        <div id="hud-crystals" class="hud-value purple">0</div>
       </div>
     </div>
     <button id="btn-hud-pause" type="button" title="Пауза (Esc)">Пауза (Esc)</button>
   </div>
 
-  <!-- Главное меню (без графы ввода имени) -->
+  <!-- Главное меню -->
   <div id="screen-menu" class="overlay-screen">
     <div class="panel">
-      <h1 class="game-title">Лунный забег</h1>
-      <p class="game-subtitle">Трёхполосный космический экшен на поверхности Луны</p>
+      <h1 class="game-title">Лунный walker</h1>
+      <p class="game-subtitle">Вы безымянный космонавт, сможете ли вы добежать до своей ракеты?</p>
 
       <div class="btn-stack">
         <button id="btn-menu-play" class="btn btn-primary" type="button">Играть</button>
@@ -60,7 +56,7 @@
           <div><strong>W / Пробел / ▲</strong> — прыжок</div>
           <div><strong>S / ▼</strong> — снизиться в воздухе</div>
           <div><strong>Esc</strong> — пауза забега</div>
-          <div><strong>Каждые 300 м</strong> — редкий кристалл</div>
+          <div><strong>M</strong> — звук вкл / выкл</div>
         </div>
       </div>
     </div>
@@ -84,7 +80,7 @@
       <h2 class="section-title">Забег завершён</h2>
       <p class="game-subtitle">Столкновение с обломком астероида</p>
 
-      <div class="stats-grid four-cols">
+      <div class="stats-grid">
         <div class="stat-card">
           <div class="label">Итоговый счёт</div>
           <div id="go-score" class="val cyan">0</div>
@@ -94,12 +90,8 @@
           <div id="go-best" class="val">0</div>
         </div>
         <div class="stat-card">
-          <div class="label">Лунные жетоны</div>
+          <div class="label">Собрано монет</div>
           <div id="go-tokens" class="val gold">+0</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Звёздные кристаллы</div>
-          <div id="go-crystals" class="val purple">+0</div>
         </div>
       </div>
 
@@ -111,15 +103,15 @@
     </div>
   </div>
 
-  <!-- Экран магазина (Скафандры за жетоны + Планеты за редкие кристаллы) -->
+  <!-- Экран магазина (Скафандры за монеты + Планеты за редкие кристаллы) -->
   <div id="screen-shop" class="overlay-screen hidden">
     <div class="panel extra-wide">
       <h2 class="section-title">Космический арсенал</h2>
-      <p class="game-subtitle">Скафандры покупаются за жетоны, а планеты на небосводе — за редкие кристаллы (раз в 300 м)</p>
+      <p class="game-subtitle">Скафандры покупаются за монеты, а планеты на небосводе — за редкие кристаллы</p>
 
       <div class="shop-balances-row">
         <div class="shop-balance-box gold-border">
-          <span>Лунные жетоны:</span>
+          <span>Лунные монеты:</span>
           <strong class="gold-text"><span id="shop-balance-tokens">0</span> шт.</strong>
         </div>
         <div class="shop-balance-box purple-border">

@@ -46,7 +46,7 @@
   const CHUNK_LENGTH = 40;
   const CHUNK_COUNT = 5;
 
-  // Каталог из 6 скафандров (оригинальные 3 + 3 новых)
+  // Каталог из 6 скафандров
   const SUITS_CATALOG = {
     lunar: {
       id: 'lunar',
@@ -128,7 +128,7 @@
     }
   };
 
-  // Каталог планет для заднего фона (покупаются за редкие Звёздные кристаллы)
+  // Каталог планет для заднего фона
   const PLANETS_CATALOG = {
     earth: {
       id: 'earth',
@@ -192,7 +192,8 @@
       ownedPlanets: ['earth'],
       selectedPlanet: 'earth',
       bestScore: 0,
-      leaderboard: []
+      leaderboard: [],
+      soundMuted: false
     },
 
     init() {
@@ -217,14 +218,14 @@
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object') return;
 
-        // Баланс жетонов и кристаллов
         const tokens = Number(parsed.tokens);
         this.data.tokens = Number.isFinite(tokens) && tokens >= 0 ? Math.floor(tokens) : 0;
 
         const crystals = Number(parsed.crystals);
         this.data.crystals = Number.isFinite(crystals) && crystals >= 0 ? Math.floor(crystals) : 0;
 
-        // Валидация скафандров
+        this.data.soundMuted = Boolean(parsed.soundMuted);
+
         const validSuitIds = Object.keys(SUITS_CATALOG);
         if (Array.isArray(parsed.ownedSuits)) {
           const filtered = parsed.ownedSuits.filter(id => validSuitIds.includes(id));
@@ -243,7 +244,6 @@
           this.data.selectedSuit = 'lunar';
         }
 
-        // Валидация планет
         const validPlanetIds = Object.keys(PLANETS_CATALOG);
         if (Array.isArray(parsed.ownedPlanets)) {
           const filteredP = parsed.ownedPlanets.filter(id => validPlanetIds.includes(id));
@@ -262,7 +262,6 @@
           this.data.selectedPlanet = 'earth';
         }
 
-        // Валидация таблицы рекордов
         if (Array.isArray(parsed.leaderboard)) {
           const cleanLb = [];
           for (const entry of parsed.leaderboard) {
@@ -304,7 +303,8 @@
         ownedPlanets: ['earth'],
         selectedPlanet: 'earth',
         bestScore: 0,
-        leaderboard: []
+        leaderboard: [],
+        soundMuted: false
       };
       this.save();
     },
@@ -349,18 +349,258 @@
   };
 
   /* ============================================================================
-   * 3. ГЛОБАЛЬНОЕ СОСТОЯНИЕ ИГРЫ И THREE.JS СЦЕНЫ
+   * 3. ПОДСИСТЕМА ПРОЦЕДУРНОГО ЗВУКА (Web Audio API)
+   * ============================================================================ */
+  const SoundManager = {
+    ctx: null,
+    isMuted: false,
+    toggleBtn: null,
+
+    init() {
+      this.isMuted = Boolean(StorageManager.data.soundMuted);
+      this.createMuteButton();
+      this.updateButtonUI();
+    },
+
+    ensureContext() {
+      if (this.isMuted) return null;
+      try {
+        if (!this.ctx) {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return null;
+          this.ctx = new AudioCtx();
+        }
+        if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+        return this.ctx;
+      } catch (e) {
+        return null;
+      }
+    },
+
+    createMuteButton() {
+      const existing = document.getElementById('btn-sound-toggle');
+      if (existing) {
+        this.toggleBtn = existing;
+        return;
+      }
+
+      const btn = document.createElement('button');
+      btn.id = 'btn-sound-toggle';
+      btn.type = 'button';
+      btn.title = 'Включить / выключить звук (клавиша M)';
+
+      Object.assign(btn.style, {
+        position: 'fixed',
+        top: '18px',
+        right: '165px',
+        zIndex: '35',
+        background: 'rgba(15, 23, 42, 0.85)',
+        border: '1px solid rgba(96, 165, 250, 0.45)',
+        color: '#f8fafc',
+        padding: '10px 14px',
+        borderRadius: '12px',
+        fontFamily: 'inherit',
+        fontWeight: '600',
+        fontSize: '0.9rem',
+        cursor: 'pointer',
+        backdropFilter: 'blur(8px)',
+        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.45)',
+        transition: 'all 0.18s ease'
+      });
+
+      btn.addEventListener('mouseenter', () => {
+        btn.style.borderColor = '#38bdf8';
+        btn.style.background = 'rgba(37, 99, 235, 0.45)';
+      });
+
+      btn.addEventListener('mouseleave', () => {
+        btn.style.borderColor = this.isMuted
+          ? 'rgba(244, 63, 94, 0.55)'
+          : 'rgba(96, 165, 250, 0.45)';
+        btn.style.background = 'rgba(15, 23, 42, 0.85)';
+      });
+
+      btn.addEventListener('click', () => {
+        this.toggleMute();
+      });
+
+      document.body.appendChild(btn);
+      this.toggleBtn = btn;
+    },
+
+    updateButtonUI() {
+      if (!this.toggleBtn) return;
+      if (this.isMuted) {
+        this.toggleBtn.textContent = '🔇 Звук: Выкл (M)';
+        this.toggleBtn.style.borderColor = 'rgba(244, 63, 94, 0.55)';
+        this.toggleBtn.style.color = '#fda4af';
+      } else {
+        this.toggleBtn.textContent = '🔊 Звук: Вкл (M)';
+        this.toggleBtn.style.borderColor = 'rgba(96, 165, 250, 0.45)';
+        this.toggleBtn.style.color = '#f8fafc';
+      }
+    },
+
+    toggleMute() {
+      this.isMuted = !this.isMuted;
+      StorageManager.data.soundMuted = this.isMuted;
+      StorageManager.save();
+      this.updateButtonUI();
+
+      if (!this.isMuted) {
+        this.playToken();
+      }
+    },
+
+    playJump() {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+
+      try {
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(175, now);
+        osc.frequency.exponentialRampToValueAtTime(540, now + 0.19);
+
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.18, now + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.21);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.22);
+      } catch (e) {}
+    },
+
+    playToken() {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+
+      try {
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(987.77, now);
+        osc.frequency.setValueAtTime(1318.51, now + 0.065);
+
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.16, now + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.23);
+      } catch (e) {}
+    },
+
+    playCrystal() {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+
+      try {
+        const now = ctx.currentTime;
+        const notes = [523.25, 659.25, 783.99, 1046.50, 1318.51];
+
+        notes.forEach((freq, idx) => {
+          const start = now + idx * 0.055;
+          const duration = 0.36;
+
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, start);
+          osc.frequency.exponentialRampToValueAtTime(freq * 1.02, start + duration);
+
+          gain.gain.setValueAtTime(0.001, start);
+          gain.gain.linearRampToValueAtTime(0.18, start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+
+          osc.start(start);
+          osc.stop(start + duration + 0.02);
+        });
+      } catch (e) {}
+    },
+
+    playCollision() {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+
+      try {
+        const now = ctx.currentTime;
+        const duration = 0.48;
+
+        const bassOsc = ctx.createOscillator();
+        const bassGain = ctx.createGain();
+
+        bassOsc.type = 'sawtooth';
+        bassOsc.frequency.setValueAtTime(145, now);
+        bassOsc.frequency.exponentialRampToValueAtTime(32, now + duration);
+
+        bassGain.gain.setValueAtTime(0.28, now);
+        bassGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+        bassOsc.connect(bassGain);
+        bassGain.connect(ctx.destination);
+
+        bassOsc.start(now);
+        bassOsc.stop(now + duration + 0.02);
+
+        const bufferSize = Math.floor(ctx.sampleRate * duration);
+        const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const output = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          output[i] = Math.random() * 2 - 1;
+        }
+
+        const whiteNoise = ctx.createBufferSource();
+        whiteNoise.buffer = noiseBuffer;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(950, now);
+        filter.frequency.exponentialRampToValueAtTime(75, now + duration);
+
+        const noiseGain = ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.32, now);
+        noiseGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+        whiteNoise.connect(filter);
+        filter.connect(noiseGain);
+        noiseGain.connect(ctx.destination);
+
+        whiteNoise.start(now);
+        whiteNoise.stop(now + duration + 0.02);
+      } catch (e) {}
+    }
+  };
+
+  /* ============================================================================
+   * 4. ГЛОБАЛЬНОЕ СОСТОЯНИЕ ИГРЫ И THREE.JS СЦЕНЫ
    * ============================================================================ */
   let currentState = GAME_STATES.MENU;
   let previousMenuState = GAME_STATES.MENU;
-  let activeShopTab = 'suits'; // 'suits' | 'planets'
+  let activeShopTab = 'suits';
 
   let scene, camera, renderer;
   let astronaut = null;
   let backgroundPlanetGroup = null;
   let terrainChunks = [];
 
-  // Пулы активных объектов
   const obstaclePool = [];
   const activeObstacles = [];
   const tokenPool = [];
@@ -368,7 +608,6 @@
   const crystalPool = [];
   const activeCrystals = [];
 
-  // Состояние текущего забега
   const runState = {
     speed: INITIAL_SPEED,
     distance: 0,
@@ -390,9 +629,95 @@
   let lastFrameTime = performance.now();
 
   /* ============================================================================
-   * 4. ПРОЦЕДУРНЫЕ МАТЕРИАЛЫ, МОДЕЛЬ КОСМОНАВТА И ПЛАНЕТ
+   * 5. ПРОЦЕДУРНЫЕ МАТЕРИАЛЫ, НОВАЯ ТЕКСТУРА МОНЕТ И МОДЕЛИ
    * ============================================================================ */
   const sharedMaterials = {};
+
+  /**
+   * Программно рисует текстуру лунной монеты на HTML5 Canvas:
+   * платиново-титановый обод с насечками, неоново-бирюзовое ядро и гравировка полумесяца со звездой.
+   */
+  function createProceduralCoinTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    const cx = 128;
+    const cy = 128;
+
+    // 1. Фон платинового диска
+    const metalGrad = ctx.createRadialGradient(cx - 25, cy - 25, 10, cx, cy, 126);
+    metalGrad.addColorStop(0, '#f8fafc');
+    metalGrad.addColorStop(0.55, '#94a3b8');
+    metalGrad.addColorStop(0.82, '#334155');
+    metalGrad.addColorStop(1, '#0f172a');
+
+    ctx.fillStyle = metalGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 126, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 2. Технические насечки по внешнему ободу монеты
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 24; i++) {
+      const angle = (i / 24) * Math.PI * 2;
+      const x1 = cx + Math.cos(angle) * 104;
+      const y1 = cy + Math.sin(angle) * 104;
+      const x2 = cx + Math.cos(angle) * 120;
+      const y2 = cy + Math.sin(angle) * 120;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    // 3. Внутренний энергетический медальон (глубокий бирюзово-изумрудный градиент)
+    const coreGrad = ctx.createRadialGradient(cx, cy, 8, cx, cy, 94);
+    coreGrad.addColorStop(0, '#5eead4');
+    coreGrad.addColorStop(0.45, '#0d9488');
+    coreGrad.addColorStop(0.85, '#115e59');
+    coreGrad.addColorStop(1, '#042f2e');
+
+    ctx.fillStyle = coreGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 94, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Концентрическое неоновое кольцо
+    ctx.strokeStyle = '#99f6e4';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 84, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 4. Гравировка лунного полумесяца в центре
+    ctx.fillStyle = '#f0fdfa';
+    ctx.beginPath();
+    ctx.arc(cx - 4, cy, 46, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#0d9488';
+    ctx.beginPath();
+    ctx.arc(cx + 16, cy - 8, 38, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 5. Четырёхлучевая звезда рядом с полумесяцем
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    const sx = cx + 24;
+    const sy = cy - 12;
+    ctx.moveTo(sx, sy - 18);
+    ctx.quadraticCurveTo(sx, sy, sx + 18, sy);
+    ctx.quadraticCurveTo(sx, sy, sx, sy + 18);
+    ctx.quadraticCurveTo(sx, sy, sx - 18, sy);
+    ctx.quadraticCurveTo(sx, sy, sx, sy - 18);
+    ctx.fill();
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  }
 
   function initSharedMaterials() {
     sharedMaterials.regolith = new THREE.MeshStandardMaterial({
@@ -440,24 +765,27 @@
       flatShading: true
     });
 
-    sharedMaterials.tokenGold = new THREE.MeshStandardMaterial({
-      color: 0xfbbf24,
-      emissive: 0xd97706,
+    // Новые материалы монеты с процедурной Canvas-текстурой
+    const coinTexture = createProceduralCoinTexture();
+
+    sharedMaterials.coinFace = new THREE.MeshStandardMaterial({
+      map: coinTexture,
+      roughness: 0.22,
+      metalness: 0.75,
+      emissive: 0x0d9488,
+      emissiveMap: coinTexture,
+      emissiveIntensity: 0.38
+    });
+
+    sharedMaterials.coinRim = new THREE.MeshStandardMaterial({
+      color: 0x99f6e4,
+      emissive: 0x0d9488,
       emissiveIntensity: 0.45,
       roughness: 0.25,
-      metalness: 0.85,
+      metalness: 0.88,
       flatShading: true
     });
 
-    sharedMaterials.tokenCenter = new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
-      emissive: 0x0284c7,
-      emissiveIntensity: 0.7,
-      roughness: 0.2,
-      metalness: 0.5
-    });
-
-    // Материалы для редкого Звёздного кристалла (раз в 300 м)
     sharedMaterials.crystalCore = new THREE.MeshStandardMaterial({
       color: 0xe879f9,
       emissive: 0xa855f7,
@@ -477,9 +805,6 @@
     });
   }
 
-  /**
-   * Создаёт составную low-poly модель космонавта из примитивов.
-   */
   function createAstronautModel() {
     const root = new THREE.Group();
     const bodyGroup = new THREE.Group();
@@ -655,9 +980,6 @@
     };
   }
 
-  /**
-   * Создаёт и обновляет 3D-модель планеты на заднем фоне в зависимости от выбранного варианта.
-   */
   function applyBackgroundPlanet(planetId) {
     if (!backgroundPlanetGroup) {
       backgroundPlanetGroup = new THREE.Group();
@@ -665,7 +987,6 @@
       scene.add(backgroundPlanetGroup);
     }
 
-    // Очищаем старую геометрию планеты
     while (backgroundPlanetGroup.children.length > 0) {
       const child = backgroundPlanetGroup.children.pop();
       if (child.geometry) child.geometry.dispose();
@@ -675,7 +996,6 @@
     const id = PLANETS_CATALOG[planetId] ? planetId : 'earth';
 
     if (id === 'earth') {
-      // Голубая Земля с зелёными материками и облачным поясом
       const oceanMesh = new THREE.Mesh(
         new THREE.IcosahedronGeometry(11.5, 2),
         new THREE.MeshStandardMaterial({
@@ -710,7 +1030,6 @@
       atmoRing.rotation.y = 0.25;
       backgroundPlanetGroup.add(atmoRing);
     } else if (id === 'saturn') {
-      // Сатурн с широкими двойными кольцами
       const core = new THREE.Mesh(
         new THREE.IcosahedronGeometry(12.5, 2),
         new THREE.MeshStandardMaterial({
@@ -749,7 +1068,6 @@
       outerRing.rotation.y = -0.3;
       backgroundPlanetGroup.add(outerRing);
     } else if (id === 'crimson') {
-      // Вулканический гигант с лавовыми разломами и двумя спутниками
       const lavaSphere = new THREE.Mesh(
         new THREE.IcosahedronGeometry(13.0, 2),
         new THREE.MeshStandardMaterial({
@@ -787,7 +1105,6 @@
       moon2.position.set(-20, -9, 8);
       backgroundPlanetGroup.add(moon2);
     } else if (id === 'neptune') {
-      // Ледяной Нептун с вертикальным криогенным кольцом
       const iceCore = new THREE.Mesh(
         new THREE.IcosahedronGeometry(12.5, 2),
         new THREE.MeshStandardMaterial({
@@ -817,7 +1134,6 @@
       iceRing2.rotation.y = -0.4;
       backgroundPlanetGroup.add(iceRing2);
     } else if (id === 'pulsar') {
-      // Квазар Бездны (чёрная дыра + неоновый аккреционный диск + полярные джеты)
       const blackHoleCore = new THREE.Mesh(
         new THREE.SphereGeometry(9.5, 20, 20),
         new THREE.MeshBasicMaterial({ color: 0x05030a })
@@ -843,7 +1159,6 @@
       accretionDisk.rotation.y = -0.2;
       backgroundPlanetGroup.add(accretionDisk);
 
-      // Полярные энергетические лучи (джеты)
       const jetBeam = new THREE.Mesh(
         new THREE.CylinderGeometry(0.6, 2.8, 48, 10),
         new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.55 })
@@ -854,7 +1169,7 @@
   }
 
   /* ============================================================================
-   * 5. ОКРУЖЕНИЕ ЛУНЫ: ПОВЕРХНОСТЬ, КРАТЕРЫ И ЗВЁЗДНОЕ НЕБО
+   * 6. ОКРУЖЕНИЕ ЛУНЫ: ПОВЕРХНОСТЬ, КРАТЕРЫ И ЗВЁЗДНОЕ НЕБО
    * ============================================================================ */
   function createStarfield() {
     const starCount = 1600;
@@ -887,7 +1202,6 @@
     const points = new THREE.Points(geo, mat);
     scene.add(points);
 
-    // Инициализируем выбранную планету на небосводе
     applyBackgroundPlanet(StorageManager.data.selectedPlanet);
 
     return points;
@@ -935,7 +1249,7 @@
             sharedMaterials.decorRock
           );
           rock.scale.y = 0.55;
-          rock.position.set(localX, rockScale * 0.25, localZ);
+          rock.position.set(localX, rockScale * 0.15, localZ);
           rock.rotation.y = Math.random() * Math.PI;
           chunkGroup.add(rock);
         }
@@ -947,12 +1261,12 @@
   }
 
   /* ============================================================================
-   * 6. ПУЛЫ ПРЕПЯТСТВИЙ, ЖЕТОНОВ И РЕДКИХ КРИСТАЛЛОВ (РАЗ В 300 М)
+   * 7. ПУЛЫ ПРЕПЯТСТВИЙ, МОНЕТ И РЕДКИХ КРИСТАЛЛОВ (РАЗ В 300 М)
    * ============================================================================ */
   function createObstacleObject(type) {
     const group = new THREE.Group();
     const isHigh = type === 'high';
-    const targetHeight = isHigh ? HIGH_OBSTACLE_HEIGHT : LOW_OBSTACLE_HEIGHT;
+    const baseHeight = isHigh ? HIGH_OBSTACLE_HEIGHT : LOW_OBSTACLE_HEIGHT;
 
     if (!isHigh) {
       const mainRock = new THREE.Mesh(
@@ -960,7 +1274,7 @@
         sharedMaterials.lowAsteroid
       );
       mainRock.scale.set(1.25, 0.92, 0.95);
-      mainRock.position.y = targetHeight * 0.5;
+      mainRock.position.y = baseHeight * 0.5;
       mainRock.castShadow = true;
       mainRock.receiveShadow = true;
       group.add(mainRock);
@@ -969,15 +1283,15 @@
         new THREE.OctahedronGeometry(BLOCK_HEIGHT * 0.36, 0),
         sharedMaterials.lowAsteroid
       );
-      sideShard.position.set(0.45, targetHeight * 0.35, 0.15);
+      sideShard.position.set(0.45, baseHeight * 0.35, 0.15);
       sideShard.rotation.z = 0.3;
       group.add(sideShard);
     } else {
       const pillar = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.52, 0.88, targetHeight, 7),
+        new THREE.CylinderGeometry(0.52, 0.88, baseHeight, 7),
         sharedMaterials.highAsteroid
       );
-      pillar.position.y = targetHeight * 0.5;
+      pillar.position.y = baseHeight * 0.5;
       pillar.castShadow = true;
       pillar.receiveShadow = true;
       group.add(pillar);
@@ -987,7 +1301,7 @@
         sharedMaterials.highAsteroidCore
       );
       crystalTop.scale.set(0.85, 1.45, 0.85);
-      crystalTop.position.set(0, targetHeight - 0.35, 0);
+      crystalTop.position.set(0, baseHeight - 0.35, 0);
       group.add(crystalTop);
 
       const midBand = new THREE.Mesh(
@@ -1007,7 +1321,9 @@
       mesh: group,
       lane: 1,
       z: 0,
-      height: targetHeight,
+      baseHeight,
+      height: baseHeight,
+      sinkOffset: 0,
       halfWidth: 0.78,
       halfDepth: 0.62,
       active: false
@@ -1035,23 +1351,33 @@
     obs.mesh.visible = false;
   }
 
+  /**
+   * Создаёт 3D-монету с новой процедурной текстурой на обеих гранях и рельефным гуртом.
+   */
   function createTokenObject() {
     const group = new THREE.Group();
 
-    const outerRing = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.46, 0.46, 0.14, 12),
-      sharedMaterials.tokenGold
-    );
-    outerRing.rotation.x = Math.PI / 2;
-    outerRing.castShadow = true;
-    group.add(outerRing);
+    // Цилиндр монеты: [боковой гурт, верхняя грань с текстурой, нижняя грань с текстурой]
+    const coinMaterials = [
+      sharedMaterials.coinRim,
+      sharedMaterials.coinFace,
+      sharedMaterials.coinFace
+    ];
 
-    const coreGem = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.24, 0),
-      sharedMaterials.tokenCenter
+    const coinDisc = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.48, 0.48, 0.12, 20),
+      coinMaterials
     );
-    coreGem.scale.z = 0.65;
-    group.add(coreGem);
+    coinDisc.rotation.x = Math.PI / 2;
+    coinDisc.castShadow = true;
+    group.add(coinDisc);
+
+    // Внешний рельефный ободок вокруг монеты
+    const outerBezel = new THREE.Mesh(
+      new THREE.TorusGeometry(0.48, 0.045, 8, 20),
+      sharedMaterials.coinRim
+    );
+    group.add(outerBezel);
 
     group.visible = false;
     scene.add(group);
@@ -1091,9 +1417,6 @@
     tok.mesh.visible = false;
   }
 
-  /**
-   * Создаёт редкий Звёздный кристалл (появляется раз в 300 метров).
-   */
   function createCrystalObject() {
     const group = new THREE.Group();
 
@@ -1153,7 +1476,7 @@
   }
 
   /* ============================================================================
-   * 7. ЧЕСТНАЯ ГЕНЕРАЦИЯ ПРЕПЯТСТВИЙ, ЖЕТОНОВ И КРИСТАЛЛОВ (КАЖДЫЕ 300 М)
+   * 8. ЧЕСТНАЯ ГЕНЕРАЦИЯ ПРЕПЯТСТВИЙ (С УТАПЛИВАНИЕМ В ГРУНТ), МОНЕТ И КРИСТАЛЛОВ
    * ============================================================================ */
   function spawnNextWave() {
     const zPos = runState.nextWaveZ;
@@ -1193,20 +1516,39 @@
       }
     }
 
-    // Спавн препятствий
+    // Спавн препятствий: часть астероидов утапливается в текстуру лунного грунта для разнообразия
+    const laneSunkHeights = [0, 0, 0];
+
     for (let lane = 0; lane < 3; lane++) {
       const kind = pattern[lane];
       if (kind === 'low' || kind === 'high') {
         const obs = acquireObstacle(kind);
         obs.lane = lane;
         obs.z = zPos;
-        obs.mesh.position.set(LANE_X[lane], 0, zPos);
-        obs.mesh.rotation.y = (lane * 1.7 + Math.abs(zPos) * 0.3) % (Math.PI * 2);
+
+        // Около 65% астероидов немного утоплены в поверхность Луны и слегка наклонены
+        let sinkOffset = 0;
+        if (Math.random() < 0.65) {
+          sinkOffset = kind === 'low'
+            ? 0.12 + Math.random() * 0.28 // Утопленный низкий обломок (остаётся легко перепрыгиваемым)
+            : 0.15 + Math.random() * 0.32; // Утопленный высокий обломок (всё ещё выше прыжка)
+        }
+
+        obs.sinkOffset = sinkOffset;
+        obs.height = obs.baseHeight - sinkOffset; // Реальная высота над поверхностью для честного коллайдера
+        laneSunkHeights[lane] = obs.height;
+
+        obs.mesh.position.set(LANE_X[lane], -sinkOffset, zPos);
+        obs.mesh.rotation.set(
+          (Math.random() - 0.5) * 0.18,
+          (lane * 1.7 + Math.abs(zPos) * 0.3) % (Math.PI * 2),
+          (Math.random() - 0.5) * 0.18
+        );
+
         activeObstacles.push(obs);
       }
     }
 
-    // Проверяем, соответствует ли дистанция этой волны отметке кратной 300 метрам
     const waveDistanceMeters = runState.distance + Math.abs(zPos);
     let spawnedRareCrystalHere = false;
 
@@ -1218,13 +1560,15 @@
       crystal.lane = guaranteedSafeLane;
       crystal.x = LANE_X[guaranteedSafeLane];
       crystal.z = zPos;
-      crystal.baseY = pattern[guaranteedSafeLane] === 'low' ? LOW_OBSTACLE_HEIGHT + 0.75 : 1.15;
+      crystal.baseY =
+        pattern[guaranteedSafeLane] === 'low'
+          ? laneSunkHeights[guaranteedSafeLane] + 0.75
+          : 1.15;
       crystal.y = crystal.baseY;
       crystal.mesh.position.set(crystal.x, crystal.y, crystal.z);
       activeCrystals.push(crystal);
     }
 
-    // Обычные лунные жетоны размещаются, если в этой точке не заспавнился редкий кристалл
     if (!spawnedRareCrystalHere && Math.random() < 0.68) {
       const tokenLane = guaranteedSafeLane;
       const laneObstacle = pattern[tokenLane];
@@ -1238,7 +1582,7 @@
         tok.z = zPos + offsetZ;
 
         if (laneObstacle === 'low' && Math.abs(offsetZ) < 2.2) {
-          tok.y = LOW_OBSTACLE_HEIGHT + 0.65;
+          tok.y = laneSunkHeights[tokenLane] + 0.65;
         } else {
           tok.y = 0.85;
         }
@@ -1258,7 +1602,7 @@
   }
 
   /* ============================================================================
-   * 8. ФИЗИКА, АНИМАЦИЯ И ПРОВЕРКА СТОЛКНОВЕНИЙ
+   * 9. ФИЗИКА, АНИМАЦИЯ И ПРОВЕРКА СТОЛКНОВЕНИЙ
    * ============================================================================ */
   function resetRunState() {
     while (activeObstacles.length > 0) {
@@ -1356,12 +1700,10 @@
       astronaut.bodyGroup.position.y = Math.abs(Math.cos(stridePhase)) * 0.08;
     }
 
-    // Вращение фоновой планеты
     if (backgroundPlanetGroup) {
       backgroundPlanetGroup.rotation.y += 0.08 * dt;
     }
 
-    // Следование камеры
     camera.position.x += (runState.playerX * 0.38 - camera.position.x) * Math.min(1, 6 * dt);
     camera.lookAt(runState.playerX * 0.2, 1.35, -14);
 
@@ -1401,6 +1743,7 @@
       const overlapY = playerBottom < effectiveObsHeight && playerTop > 0.05;
 
       if (overlapZ && overlapX && overlapY) {
+        SoundManager.playCollision();
         triggerGameOver();
         return;
       }
@@ -1411,7 +1754,7 @@
       }
     }
 
-    // 7. Обновление и сбор обычных жетонов
+    // 7. Обновление и сбор лунных монет
     for (let i = activeTokens.length - 1; i >= 0; i--) {
       const tok = activeTokens[i];
       tok.z += stepZ;
@@ -1426,6 +1769,7 @@
         if (dx < 0.85 && dz < 0.85 && dy < 1.05) {
           tok.collected = true;
           runState.tokensCollected += 1;
+          SoundManager.playToken();
           releaseToken(tok);
           activeTokens.splice(i, 1);
           continue;
@@ -1438,7 +1782,7 @@
       }
     }
 
-    // 8. Обновление и сбор редких Звёздных кристаллов (раз в 300 м)
+    // 8. Обновление и сбор редких Звёздных кристаллов (раз в 300 м, копятся для магазина)
     for (let i = activeCrystals.length - 1; i >= 0; i--) {
       const cr = activeCrystals[i];
       cr.z += stepZ;
@@ -1455,6 +1799,7 @@
         if (dx < 0.95 && dz < 0.95 && dy < 1.15) {
           cr.collected = true;
           runState.crystalsCollected += 1;
+          SoundManager.playCrystal();
           releaseCrystal(cr);
           activeCrystals.splice(i, 1);
           continue;
@@ -1490,14 +1835,13 @@
   }
 
   /* ============================================================================
-   * 9. УПРАВЛЕНИЕ СОСТОЯНИЯМИ И ИНТЕРФЕЙСОМ
+   * 10. УПРАВЛЕНИЕ СОСТОЯНИЯМИ И ИНТЕРФЕЙСОМ
    * ============================================================================ */
   const uiElements = {
     hud: document.getElementById('hud'),
     hudScore: document.getElementById('hud-score'),
     hudBest: document.getElementById('hud-best'),
     hudTokens: document.getElementById('hud-tokens'),
-    hudCrystals: document.getElementById('hud-crystals'),
     screenMenu: document.getElementById('screen-menu'),
     screenPause: document.getElementById('screen-pause'),
     screenGameOver: document.getElementById('screen-gameover'),
@@ -1506,7 +1850,6 @@
     goScore: document.getElementById('go-score'),
     goBest: document.getElementById('go-best'),
     goTokens: document.getElementById('go-tokens'),
-    goCrystals: document.getElementById('go-crystals'),
     shopBalanceTokens: document.getElementById('shop-balance-tokens'),
     shopBalanceCrystals: document.getElementById('shop-balance-crystals'),
     shopSuitsContainer: document.getElementById('shop-suits-container'),
@@ -1530,6 +1873,12 @@
     hideAllScreens();
     currentState = newState;
     lastFrameTime = performance.now();
+
+    if (SoundManager.toggleBtn) {
+      const isRunningOrPaused =
+        newState === GAME_STATES.RUNNING || newState === GAME_STATES.PAUSED;
+      SoundManager.toggleBtn.style.right = isRunningOrPaused ? '160px' : '24px';
+    }
 
     switch (newState) {
       case GAME_STATES.MENU:
@@ -1564,6 +1913,7 @@
   }
 
   function startNewRun() {
+    SoundManager.ensureContext();
     resetRunState();
     setState(GAME_STATES.RUNNING);
   }
@@ -1585,7 +1935,6 @@
     uiElements.goScore.textContent = `${runState.score} (${meters} м)`;
     uiElements.goBest.textContent = String(StorageManager.data.bestScore);
     uiElements.goTokens.textContent = `+${runState.tokensCollected} (всего: ${StorageManager.data.tokens})`;
-    uiElements.goCrystals.textContent = `+${runState.crystalsCollected} (всего: ${StorageManager.data.crystals})`;
 
     setState(GAME_STATES.GAME_OVER);
   }
@@ -1605,11 +1954,10 @@
     const liveBest = Math.max(StorageManager.data.bestScore, runState.score);
     uiElements.hudBest.textContent = String(liveBest);
     uiElements.hudTokens.textContent = String(runState.tokensCollected);
-    uiElements.hudCrystals.textContent = String(runState.crystalsCollected);
   }
 
   /* ============================================================================
-   * 10. РЕНДЕР МАГАЗИНА (6 СКАФАНДРОВ И 5 ПЛАНЕТ) И ТАБЛИЦЫ РЕКОРДОВ
+   * 11. РЕНДЕР МАГАЗИНА (6 СКАФАНДРОВ И 5 ПЛАНЕТ) И ТАБЛИЦЫ РЕКОРДОВ
    * ============================================================================ */
   function createSuitMiniPreviewSVG(suit) {
     const svgNS = 'http://www.w3.org/2000/svg';
@@ -1770,7 +2118,7 @@
 
       const costEl = document.createElement('div');
       costEl.className = 'suit-cost';
-      costEl.textContent = suit.cost === 0 ? 'Бесплатно' : `${suit.cost} жетонов`;
+      costEl.textContent = suit.cost === 0 ? 'Бесплатно' : `${suit.cost} монет`;
       card.appendChild(costEl);
 
       const actionBtn = document.createElement('button');
@@ -1787,6 +2135,7 @@
           StorageManager.data.selectedSuit = suit.id;
           StorageManager.save();
           if (astronaut) astronaut.applySuit(suit.id);
+          SoundManager.playToken();
           renderShopUI();
         });
       } else {
@@ -1806,6 +2155,7 @@
           StorageManager.data.selectedSuit = suit.id;
           StorageManager.save();
           if (astronaut) astronaut.applySuit(suit.id);
+          SoundManager.playToken();
           renderShopUI();
         });
       }
@@ -1861,6 +2211,7 @@
           StorageManager.data.selectedPlanet = planet.id;
           StorageManager.save();
           applyBackgroundPlanet(planet.id);
+          SoundManager.playCrystal();
           renderShopUI();
         });
       } else {
@@ -1880,6 +2231,7 @@
           StorageManager.data.selectedPlanet = planet.id;
           StorageManager.save();
           applyBackgroundPlanet(planet.id);
+          SoundManager.playCrystal();
           renderShopUI();
         });
       }
@@ -1937,10 +2289,15 @@
   }
 
   /* ============================================================================
-   * 11. ОБРАБОТЧИКИ ВВОДА И СОБЫТИЙ ОКНА
+   * 12. ОБРАБОТЧИКИ ВВОДА И СОБЫТИЙ ОКНА
    * ============================================================================ */
   function setupEventListeners() {
     window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyM' && !e.repeat) {
+        SoundManager.toggleMute();
+        return;
+      }
+
       const gameKeys = [
         'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
         'Space', 'KeyA', 'KeyD', 'KeyW', 'KeyS'
@@ -1973,6 +2330,7 @@
         if (!runState.isJumping && runState.playerY <= 0.001) {
           runState.isJumping = true;
           runState.velocityY = JUMP_INITIAL_VELOCITY;
+          SoundManager.playJump();
         }
       } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
         if (runState.isJumping && runState.playerY > 0.05) {
@@ -2000,7 +2358,6 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // Кнопки навигации
     document.getElementById('btn-menu-play').addEventListener('click', startNewRun);
 
     document.getElementById('btn-menu-shop').addEventListener('click', () => {
@@ -2049,13 +2406,12 @@
       setState(previousMenuState);
     });
 
-    // Переключение вкладок в магазине
     uiElements.tabBtnSuits.addEventListener('click', () => switchShopTab('suits'));
     uiElements.tabBtnPlanets.addEventListener('click', () => switchShopTab('planets'));
   }
 
   /* ============================================================================
-   * 12. ИНИЦИАЛИЗАЦИЯ THREE.JS И ЕДИНЫЙ ИГРОВОЙ ЦИКЛ
+   * 13. ИНИЦИАЛИЗАЦИЯ THREE.JS И ЕДИНЫЙ ИГРОВОЙ ЦИКЛ
    * ============================================================================ */
   function showFatalError(messageText) {
     hideAllScreens();
@@ -2160,10 +2516,12 @@
   }
 
   /* ============================================================================
-   * 13. ЗАПУСК ПРИЛОЖЕНИЯ
+   * 14. ЗАПУСК ПРИЛОЖЕНИЯ
    * ============================================================================ */
   function bootstrap() {
     StorageManager.init();
+    SoundManager.init();
+
     const ok = initThreeScene();
     if (!ok) return;
 
